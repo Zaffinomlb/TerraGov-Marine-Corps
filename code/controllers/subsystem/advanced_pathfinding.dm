@@ -1,69 +1,56 @@
+//Needed more pathfinding attempts.
+#define PATHFINDER_MAX_TRIES 250
+#define NODE_SYNC_INTERVAL 30 SECONDS
+
 SUBSYSTEM_DEF(advanced_pathfinding)
 	name = "Advanced Pathfinding"
 	priority = FIRE_PRIORITY_ADVANCED_PATHFINDING
 	wait = 1 SECONDS
-	///List of ai_behaviour datum asking for a tile pathfinding
 	var/list/datum/ai_behavior/tile_pathfinding_to_do = list()
-	///List of ai_behaviour datum asking for a tile pathfinding
 	var/list/datum/ai_behavior/node_pathfinding_to_do = list()
+	var/last_node_refresh = 0
 
 /datum/controller/subsystem/advanced_pathfinding/Initialize()
 	var/list/nodes = list()
-	for(var/obj/effect/ai_node/ai_node AS in GLOB.all_nodes)
+	for(var/obj/effect/ai_node/ai_node as in GLOB.all_nodes)
+		if(QDELETED(ai_node))
+			continue
 		nodes += list(ai_node.serialize())
 	rustg_register_nodes_astar(json_encode(nodes))
 	return SS_INIT_SUCCESS
 
-#ifdef TESTING
-#define BENCHMARK_LOOP while(world.timeofday < end_time)
-#define BENCHMARK_RESET end_time = world.timeofday + duration
-
-/// Run a benchmark comparing dm pathfinding with rust one. Will freeze server for 2 * run_number seconds
-/datum/controller/subsystem/advanced_pathfinding/proc/benchmark(run_number)
-	var/duration = 1 SECONDS
-	var/end_time = world.timeofday + duration
-
-	var/dm_iterations = 0
-	var/rust_iterations = 0
-
-	for(var/i in 1 to run_number)
-		var/obj/effect/ai_node/start_node = pick(GLOB.all_nodes)
-		var/obj/effect/ai_node/goal_node = pick(GLOB.all_nodes)
-
-		while (start_node.z != goal_node.z || goal_node == start_node)
-			goal_node = pick(GLOB.all_nodes)
-
-		BENCHMARK_LOOP
-			get_path(start_node, goal_node)
-			dm_iterations++
-		BENCHMARK_RESET
-
-		BENCHMARK_LOOP
-			rustg_generate_path_astar("[start_node.unique_id]", "[goal_node.unique_id]")
-			rust_iterations++
-		BENCHMARK_RESET
-
-	message_admins("Average number of iterations for dm pathfinding in one sec : [dm_iterations/run_number]")
-	message_admins("Average number of iterations for rust pathfinding in one sec : [rust_iterations/run_number]")
-#endif //TESTING
+/datum/controller/subsystem/advanced_pathfinding/proc/refresh_nodes()
+	var/list/nodes = list()
+	for(var/obj/effect/ai_node/ai_node as in GLOB.all_nodes)
+		if(QDELETED(ai_node))
+			continue
+		nodes += list(ai_node.serialize())
+	rustg_update_nodes_astar(json_encode(nodes))
 
 /datum/controller/subsystem/advanced_pathfinding/fire()
-	for(var/datum/ai_behavior/ai_behavior AS in tile_pathfinding_to_do)
+	// Node synchronization
+	if(world.time > last_node_refresh + NODE_SYNC_INTERVAL)
+		refresh_nodes()
+		last_node_refresh = world.time
+	
+	// Tile pathfinding processing
+	for(var/datum/ai_behavior/ai_behavior as in tile_pathfinding_to_do)
 		ai_behavior.look_for_tile_path()
 		tile_pathfinding_to_do -= ai_behavior
-		if (MC_TICK_CHECK)
+		if(MC_TICK_CHECK)
 			return
-	for(var/datum/ai_behavior/ai_behavior AS in node_pathfinding_to_do)
+	
+	// Node pathfinding processing
+	for(var/datum/ai_behavior/ai_behavior as in node_pathfinding_to_do)
 		ai_behavior.look_for_node_path()
 		node_pathfinding_to_do -= ai_behavior
 		ai_behavior.registered_for_node_pathfinding = FALSE
-		if (MC_TICK_CHECK)
+		if(MC_TICK_CHECK)
 			return
 
 /datum/controller/subsystem/advanced_pathfinding/stat_entry(msg)
 	msg = "Node pathfinding : [length(node_pathfinding_to_do)] || Tile pathfinding : [length(tile_pathfinding_to_do)]"
 	return ..()
-
 
 #define NODE_PATHING "node_pathing" //Looking through the network of nodes the best node path
 #define TILE_PATHING "tile_pathing" //Looking the best tile path
